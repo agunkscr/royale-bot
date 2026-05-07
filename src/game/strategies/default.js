@@ -80,6 +80,7 @@ export function decideActions(view, canAct) {
   // Rest
   if (ep < 3 && !enemies.length && !guardians.length) {
     actions.push({ type: ACTIONS.REST, data: {} });
+    return actions;
   }
 
   return actions;
