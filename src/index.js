@@ -1,16 +1,21 @@
-const AgentLoop = require('./core/agent-loop');
-const logger = require('./utils/logger');
+import { AgentLoop } from './core/agent-loop.js';
+import { startDashboard } from '../dashboard-server.js';
+import { logger } from './utils/logger.js';
+import dashboardState from './utils/state-bridge.js';
+import { config } from './config.js';
 
 const loop = new AgentLoop();
-loop.start();
 
-// Tangani graceful shutdown
 process.on('SIGINT', () => {
-  logger.info('Menghentikan bot...');
+  logger.info('Shutting down...');
   loop.stop();
   process.exit(0);
 });
 
-process.on('unhandledRejection', (reason) => {
-  logger.error('Unhandled Rejection:', reason);
-});
+const port = config.port;
+startDashboard(port);
+
+dashboardState.addLog('system', 'Bot started');
+logger.info(`Dashboard running on port ${port}`);
+
+loop.start();
