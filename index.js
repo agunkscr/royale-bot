@@ -15,7 +15,7 @@ let HEADERS = {};
 let currentAgentId = 'primary';
 let gameStats = { totalWins: 0, totalMoltz: 0, totalSmoltz: 0, totalCross: 0 };
 
-// ── Fungsi bantu untuk dashboard ────────────────────────────────
+// ── Fungsi bantu ────────────────────────────────────────────────
 function updateDashboardFromView(view) {
   const self = view.self || {};
   const hp = self.hp ?? 100;
@@ -32,7 +32,7 @@ function updateDashboardFromView(view) {
   });
 }
 
-// ── Wallet EOA (untuk paid room) ────────────────────────────────
+// ── Wallet (opsional untuk paid room) ───────────────────────────
 let signer = null;
 let walletAddress = null;
 try {
@@ -40,112 +40,116 @@ try {
   if (pk && ethers.isHexString(pk, 32)) {
     signer = new ethers.Wallet(pk);
     walletAddress = signer.address;
-    console.log(`Wallet EOA terdeteksi: ${walletAddress}`);
+    console.log(`Wallet EOA: ${walletAddress}`);
   } else {
-    console.warn('Tidak ada WALLET_PRIVATE_KEY yang valid. Mode paid dinonaktifkan.');
+    console.warn('No valid WALLET_PRIVATE_KEY. Paid room disabled.');
   }
 } catch (e) {
-  console.warn('Gagal membuat signer:', e.message);
+  console.warn('Signer error:', e.message);
 }
 
-// ── Fungsi utama State Router ─────────────────────────────────
+// ── Main loop ─────────────────────────────────────────────────
 async function main() {
   console.log('=== Molty Royale Bot ===');
   try {
     const meRes = await fetch(`${BASE}/accounts/me`, { headers: HEADERS });
     if (!meRes.ok) {
       if (meRes.status === 401) {
-        console.error('API Key tidak valid. Periksa kembali.');
+        console.error('Invalid API Key');
         process.exit(1);
       }
-      console.error(`/accounts/me gagal (${meRes.status})`);
+      console.error(`/accounts/me error ${meRes.status}`);
       return delayAndRetry(60000);
     }
-
     const me = (await meRes.json()).data;
     console.log(`Identity: ${me.readiness.erc8004Id ? 'OK' : 'MISSING'}`);
     console.log(`Paid Ready: ${me.readiness.paidReady}`);
-    console.log(`Saldo (sMoltz): ${me.balance ?? 'tidak diketahui'}`);
-
-    // Update saldo ke dashboard
-    if (me.balance !== undefined) {
-      gameStats.totalSmoltz = me.balance;
-      dashboardState.updateAgent(currentAgentId, { totalSmoltz: me.balance });
-    }
+    console.log(`Balance (sMoltz): ${me.balance ?? '?'}`);
 
     if (!me.readiness.erc8004Id) {
-      console.error('Belum memiliki identitas ERC‑8004. Bot tidak bisa bermain.');
+      console.error('No ERC-8004 identity. Exiting.');
       process.exit(0);
     }
 
-    // Update statistik global dari server (jika ada)
+    // Update global stats jika ada
     if (me.stats) {
       gameStats.totalWins = me.stats.totalWins || 0;
       gameStats.totalMoltz = me.stats.moltz || 0;
-      gameStats.totalSmoltz = me.stats.smoltz || gameStats.totalSmoltz;
+      gameStats.totalSmoltz = me.stats.smoltz || 0;
       dashboardState.updateAgent(currentAgentId, gameStats);
     }
 
-    // State Router sesuai skill.md
+    // State Router: cek apakah sedang dalam game
     if (me.currentGames && me.currentGames.length > 0) {
       const game = me.currentGames[0];
       console.log(`Melanjutkan game aktif: ${game.gameId}`);
       return playGameViaAgentSocket(game.gameId);
     }
 
+    // Cek kesiapan paid room
     if (me.readiness.paidReady) {
       if (!signer) {
-        console.error('Akun siap PAID room, tapi WALLET_PRIVATE_KEY tidak diset. Bot berhenti.');
+        console.error('Paid room ready but no private key. Exiting.');
         process.exit(0);
       }
-      const ENTRY_FEE_SMOLTZ = 500;
+      const fee = 500;
       const balance = me.balance || 0;
-      if (balance >= ENTRY_FEE_SMOLTZ) {
-        console.log(`Saldo ${balance} sMoltz mencukupi. Masuk PAID room (offchain)...`);
+      if (balance >= fee) {
+        console.log(`sMoltz balance ${balance} >= ${fee}. Joining PAID offchain.`);
         return joinPaid('offchain');
       } else {
-        console.error(`Saldo sMoltz (${balance}) tidak cukup (butuh ${ENTRY_FEE_SMOLTZ}). Bot berhenti.`);
+        console.warn(`Insufficient sMoltz (${balance}/${fee}). Cannot enter paid room.`);
         process.exit(0);
       }
     }
 
-    // Default: free room
-    console.log('Mencoba masuk free room...');
+    // Fallback ke free room
+    console.log('Mencoba join free room...');
     return joinFree();
   } catch (error) {
-    console.error('Error di main loop:', error);
+    console.error('Main loop error:', error);
     delayAndRetry(30000);
   }
 }
 
 function delayAndRetry(ms) {
-  console.log(`Menunggu ${ms / 1000} detik sebelum mencoba lagi...`);
   setTimeout(main, ms);
 }
 
-// ── WebSocket join: Free Room ──────────────────────────────────
+// ── WebSocket join untuk free room ─────────────────────────────
 function joinFree() {
   const ws = new WebSocket(WS_JOIN, { headers: HEADERS });
-  ws.on('open', () => console.log('/ws/join (free) terbuka'));
+  let gameStarted = false;   // flag agar tidak start ulang
+
+  ws.on('open', () => console.log('/ws/join (free) opened'));
 
   ws.on('message', (data) => {
     const msg = JSON.parse(data.toString());
     console.log('Free join msg:', msg.type);
+
     if (msg.type === 'welcome') {
       const decision = msg.decision;
-      console.log(`Server decision: ${decision}`);
+      console.log(`Decision: ${decision}`);
       if (decision === 'FREE_ONLY' || decision === 'ASK_ENTRY_TYPE') {
         ws.send(JSON.stringify({ type: 'hello', entryType: 'free' }));
       } else if (decision === 'PAID_ONLY') {
-        console.error('Server memaksa PAID room. Bot keluar.');
+        console.error('Server memaksa PAID room. Keluar.');
         ws.close();
         process.exit(0);
       } else if (decision === 'BLOCKED') {
-        console.error('Diblokir dari free room:', msg.readiness);
+        console.error('Diblokir:', msg.readiness);
         ws.close();
         process.exit(0);
       }
-    } else if (msg.type === 'game_started') {
+    } else if (msg.type === 'agent_view' && !gameStarted) {
+      // Mulai game loop begitu agent_view pertama diterima
+      gameStarted = true;
+      const gameId = msg.gameId || 'unknown';
+      dashboardState.addLog(currentAgentId, `Game dimulai (agent_view): ${gameId}`);
+      playGameLoop(ws, gameId);
+    } else if (msg.type === 'game_started' && !gameStarted) {
+      // Cadangan jika server mengirim game_started (lebih formal)
+      gameStarted = true;
       dashboardState.addLog(currentAgentId, `Game dimulai: ${msg.gameId}`);
       playGameLoop(ws, msg.gameId);
     } else if (msg.type === 'error') {
@@ -155,53 +159,62 @@ function joinFree() {
 
   ws.on('close', (code, reason) => {
     const reasonStr = reason?.toString() || '';
-    console.log(`Join free ditutup (${code}) ${reasonStr}`);
+    console.log(`Join closed (${code}) ${reasonStr}`);
     if (code === 4503 && reasonStr.includes('MAINTENANCE')) {
-      console.warn('Server maintenance, menunggu 5 menit...');
-      dashboardState.addLog('system', 'Server maintenance, coba lagi 5 menit');
+      console.warn('Server dalam pemeliharaan. Menunggu 5 menit.');
+      dashboardState.addLog('system', 'Server maintenance, retrying in 5 min');
       setTimeout(main, 300000);
     } else {
       delayAndRetry(5000);
     }
   });
 
-  ws.on('error', (e) => console.error('Error WS free:', e.message));
+  ws.on('error', (e) => console.error('WS join error:', e.message));
 }
 
-// ── WebSocket join: Paid Room ──────────────────────────────────
+// ── WebSocket join untuk paid room ─────────────────────────────
 function joinPaid(mode = 'offchain') {
   const ws = new WebSocket(WS_JOIN, { headers: HEADERS });
-  ws.on('open', () => console.log(`/ws/join (paid, ${mode}) terbuka`));
+  let gameStarted = false;
+
+  ws.on('open', () => console.log(`/ws/join (paid, ${mode}) opened`));
 
   ws.on('message', async (data) => {
     const msg = JSON.parse(data.toString());
     console.log('Paid join msg:', msg.type);
+
     if (msg.type === 'welcome') {
       const decision = msg.decision;
-      console.log(`Server decision: ${decision}`);
+      console.log(`Decision: ${decision}`);
       if (decision === 'PAID_ONLY' || decision === 'ASK_ENTRY_TYPE') {
         ws.send(JSON.stringify({ type: 'hello', entryType: 'paid', mode }));
       } else if (decision === 'FREE_ONLY') {
-        console.warn('Server hanya menerima free room. Fallback.');
+        console.warn('Server hanya menerima free. Fallback.');
         ws.close();
         delayAndRetry(5000);
       } else if (decision === 'BLOCKED') {
-        console.error('Diblokir dari paid room:', msg.readiness);
+        console.error('Blocked from paid:', msg.readiness);
         process.exit(0);
       }
     } else if (msg.type === 'signature_required') {
-      console.log('Server meminta tanda tangan...');
+      console.log('Server requests signature...');
       try {
         const payload = msg.data?.signaturePayload;
-        if (!payload) throw new Error('Payload tidak ada');
+        if (!payload) throw new Error('No payload');
         const signature = await signer.signMessage(payload);
         ws.send(JSON.stringify({ type: 'signature', data: { signature } }));
-        console.log('Tanda tangan terkirim');
+        console.log('Signature sent');
       } catch (e) {
-        console.error('Gagal tanda tangan:', e.message);
+        console.error('Signature failed:', e.message);
         ws.close();
       }
-    } else if (msg.type === 'game_started') {
+    } else if (msg.type === 'agent_view' && !gameStarted) {
+      gameStarted = true;
+      const gameId = msg.gameId || 'unknown';
+      dashboardState.addLog(currentAgentId, `Paid game dimulai (agent_view): ${gameId}`);
+      playGameLoop(ws, gameId);
+    } else if (msg.type === 'game_started' && !gameStarted) {
+      gameStarted = true;
       dashboardState.addLog(currentAgentId, `Paid game dimulai: ${msg.gameId}`);
       playGameLoop(ws, msg.gameId);
     } else if (msg.type === 'error') {
@@ -211,24 +224,27 @@ function joinPaid(mode = 'offchain') {
   });
 
   ws.on('close', (code) => {
-    console.log(`Paid join ditutup (${code})`);
+    console.log(`Paid join closed (${code})`);
     delayAndRetry(5000);
   });
-  ws.on('error', (e) => console.error('Error WS paid:', e.message));
+  ws.on('error', (e) => console.error('WS paid error:', e.message));
 }
 
-// ── Gameplay Loop ──────────────────────────────────────────────
+// ── Gameplay loop ──────────────────────────────────────────────
 function playGameLoop(ws, gameId) {
-  console.log(`Memainkan game ${gameId}`);
+  console.log(`Playing game ${gameId}`);
   let currentState = null;
 
   ws.on('message', (data) => {
     const msg = JSON.parse(data.toString());
-    if (msg.type === 'state' || msg.type === 'turn') {
+
+    // Perbarui state dari state/turn/agent_view
+    if (msg.type === 'state' || msg.type === 'turn' || msg.type === 'agent_view') {
       currentState = msg;
       updateDashboardFromView(msg);
     }
 
+    // Giliran bot?
     if (msg.yourTurn === true || (msg.type === 'turn' && msg.playerId)) {
       if (!currentState) {
         ws.send(JSON.stringify({ type: 'action', action: 'defend' }));
@@ -244,29 +260,29 @@ function playGameLoop(ws, gameId) {
       gameStats.totalSmoltz += rewards.sMoltz || 0;
       gameStats.totalMoltz += rewards.Moltz || 0;
       dashboardState.updateAgent(currentAgentId, gameStats);
-      dashboardState.addLog(currentAgentId, `Game selesai. Pemenang: ${msg.winnerId}`);
+      dashboardState.addLog(currentAgentId, `Game ended. Winner: ${msg.winnerId}`);
       ws.close();
       delayAndRetry(5000);
     }
   });
 
   ws.on('close', (code) => {
-    console.log(`Game WS ditutup (${code})`);
+    console.log(`Game WS closed (${code})`);
     delayAndRetry(5000);
   });
 }
 
+// ── Koneksi langsung ke game yang sedang berjalan ─────────────
 function playGameViaAgentSocket(gameId) {
   const ws = new WebSocket(WS_AGENT, { headers: HEADERS });
   ws.on('open', () => playGameLoop(ws, gameId));
-  ws.on('error', (e) => console.error('Error WS agent:', e.message));
+  ws.on('error', (e) => console.error('Agent WS error:', e.message));
 }
 
-// ── Inisialisasi & Autentikasi ─────────────────────────────────
+// ── Inisialisasi & autentikasi awal ────────────────────────────
 async function init() {
   const rawKey = process.env.API_KEY || '';
 
-  // Ambil versi server
   try {
     const vRes = await fetch(`${BASE}/version`, {
       headers: { 'X-Version': '1.6.0' }
@@ -275,19 +291,18 @@ async function init() {
       const vData = await vRes.json();
       if (vData.success && vData.data?.version) {
         VERSION = vData.data.version;
-        console.log(`Versi server: ${VERSION}`);
+        console.log(`Server version: ${VERSION}`);
       } else {
-        console.warn('Gagal parse versi, tetap gunakan 1.6.0');
+        console.warn('Could not parse version, using 1.6.0');
       }
     } else if (vRes.status === 426) {
-      console.error('VERSION_MISMATCH, update bot!');
+      console.error('VERSION_MISMATCH');
       process.exit(1);
     }
   } catch (e) {
-    console.warn('Gagal fetch versi, gunakan 1.6.0');
+    console.warn('Version fetch failed, using 1.6.0');
   }
 
-  // Coba dua metode autentikasi
   const methods = [
     {
       name: 'mr-auth',
@@ -312,10 +327,10 @@ async function init() {
       const hdrs = method.headers();
       const res = await fetch(`${BASE}/accounts/me`, { headers: hdrs });
       const body = await res.json().catch(() => ({}));
-      console.log(`Auth ${method.name} → ${res.status} ${JSON.stringify(body).slice(0,120)}`);
+      console.log(`Auth ${method.name} → ${res.status} ${JSON.stringify(body).slice(0,100)}`);
       if (res.ok && body.success) {
         HEADERS = hdrs;
-        console.log(`✅ Autentikasi berhasil dengan ${method.name}`);
+        console.log(`✅ Authenticated via ${method.name}`);
         return;
       }
     } catch (err) {
@@ -323,14 +338,14 @@ async function init() {
     }
   }
 
-  console.error('❌ Semua metode autentikasi gagal.');
+  console.error('❌ All auth methods failed.');
   process.exit(1);
 }
 
-// ── Mulai ─────────────────────────────────────────────────────
+// ── Mulai ──────────────────────────────────────────────────────
 init().then(() => {
   const port = process.env.PORT || 3000;
   startDashboard(port);
-  dashboardState.addLog('system', 'Bot dimulai');
+  dashboardState.addLog('system', 'Bot started');
   main();
 });
