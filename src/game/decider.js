@@ -1,5 +1,4 @@
 import { decideActions } from './strategies/default.js';
-import { COOLDOWN_ACTIONS } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 
 export class DecisionMaker {
