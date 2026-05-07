@@ -18,4 +18,12 @@ startDashboard(port);
 dashboardState.addLog('system', 'Bot started');
 logger.info(`Dashboard running on port ${port}`);
 
+// Debug: tunjuk sama ada API key diload (masked)
+const key = config.apiKey;
+if (!key) {
+  logger.error('API_KEY tidak diset! Semak environment variable.');
+} else {
+  logger.info(`API_KEY diload: ${key.slice(0, 8)}...${key.slice(-4)} (panjang: ${key.length})`);
+}
+
 loop.start();
