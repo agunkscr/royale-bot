@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 
 export function startDashboard(port = 3000) {
   const app = express();
-  app.use(express.static(path.join(__dirname, 'dashboard')));
+  app.use(express.static(path.join(__dirname, 'src', 'dashboard')));
   app.get('/health', (_, res) => res.status(200).send('OK'));
   app.get('/api/state', (_, res) => res.json(dashboardState.getSnapshot()));
 
