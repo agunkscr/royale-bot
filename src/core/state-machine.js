@@ -1,7 +1,7 @@
 export function determineState(account) {
   if (!account || !account.id) return { state: 'ERROR', action: 'invalid_account' };
 
-  const { readiness, currentGames } = account;
+  const { readiness = {}, currentGames } = account;
 
   if (!readiness.erc8004Id && (!currentGames || currentGames.length === 0)) {
     return { state: 'NO_IDENTITY', action: 'register_identity' };
