@@ -1,16 +1,29 @@
-const fetch = require('node-fetch');
-const config = require('../config');
-const logger = require('../utils/logger');
+import fetch from 'node-fetch';
+import { config } from '../config.js';
+import { logger } from '../utils/logger.js';
 
-const headers = {
+const getHeaders = () => ({
   'Authorization': `Bearer ${config.apiKey}`,
   'X-Version': config.version,
   'Content-Type': 'application/json',
-};
+});
 
-async function getAccountStatus() {
+export async function fetchVersion() {
   try {
-    const res = await fetch(`${config.apiBaseUrl}/accounts/me`, { headers });
+    const res = await fetch(`${config.apiBase}/version`, { headers: getHeaders() });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    logger.info(`API version: ${data.version || 'unknown'}`);
+    return data;
+  } catch (err) {
+    logger.error('Failed to fetch version:', err.message);
+    return null;
+  }
+}
+
+export async function getAccount() {
+  try {
+    const res = await fetch(`${config.apiBase}/accounts/me`, { headers: getHeaders() });
     if (res.status === 426) {
       logger.warn('Version mismatch, update X-Version header');
       return null;
@@ -19,17 +32,17 @@ async function getAccountStatus() {
     const data = await res.json();
     return data;
   } catch (err) {
-    logger.error('Failed to fetch account status:', err.message);
+    logger.error('Failed to fetch account:', err.message);
     return null;
   }
 }
 
-async function registerIdentity(agentId) {
+export async function registerIdentity(tokenId) {
   try {
-    const res = await fetch(`${config.apiBaseUrl}/api/identity`, {
+    const res = await fetch(`${config.apiBase}/identity`, {
       method: 'POST',
-      headers,
-      body: JSON.stringify({ agentId }), // agentId = tokenId dari NFT ERC-8004
+      headers: getHeaders(),
+      body: JSON.stringify({ agentId: tokenId }),
     });
     if (res.status === 426) throw new Error('Version mismatch');
     if (!res.ok) {
@@ -42,5 +55,3 @@ async function registerIdentity(agentId) {
     return null;
   }
 }
-
-module.exports = { getAccountStatus, registerIdentity };
